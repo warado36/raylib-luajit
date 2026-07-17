@@ -1,5 +1,6 @@
 -- NOTE: imports
-ffi = require("ffi")
+local ffi = require("ffi")
+local mathffi = require("ffi")
 
 ffi.cdef[[
     typedef void (*TraceLogCallback)(int logLevel, const char *text, va_list args);
@@ -588,11 +589,16 @@ ffi.cdef[[
 local raylib = ffi.load("./lib/libraylib.so")
 --
 
-
+mathffi.cdef[[
+    typedef float Vector3[3];
+    typedef float Matrix[16];
+    void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2);
+    Vector3 Vector3Unproject(Vector3 source, Matrix projection, Matrix view);
+]]
+local raymath = mathffi.load("./raymath_rs/target/release/libraymath_rs.so")
+--
 
 -- Helper functions for struct conversion
-
--- --- 1. Basic Math Types ---
 
 local function vec2_to_c(v)
     if ffi.istype("Vector2", v) then return v end
@@ -621,14 +627,14 @@ local function vec4_from_c(v)
     return { x = tonumber(v.x), y = tonumber(v.y), z = tonumber(v.z), w = tonumber(v.w) }
 end
 
--- Quaternion is typedef Vector4
+
 local quat_to_c = vec4_to_c
 local quat_from_c = vec4_from_c
 
 local function matrix_to_c(m)
     if ffi.istype("Matrix", m) then return m end
     local c_m = ffi.new("Matrix")
-    -- Поддержка как именованных полей, так и плоского массива m0..m15
+
     c_m.m0 = m.m0 or m[0]; c_m.m4 = m.m4 or m[4]; c_m.m8 = m.m8 or m[8]; c_m.m12 = m.m12 or m[12]
     c_m.m1 = m.m1 or m[1]; c_m.m5 = m.m5 or m[5]; c_m.m9 = m.m9 or m[9]; c_m.m13 = m.m13 or m[13]
     c_m.m2 = m.m2 or m[2]; c_m.m6 = m.m6 or m[6]; c_m.m10 = m.m10 or m[10]; c_m.m14 = m.m14 or m[14]
@@ -647,7 +653,7 @@ end
 
 local function color_to_c(c)
     if ffi.istype("Color", c) then return c end
-    -- Поддержка {r,g,b,a} и {r=...,g=...}
+
     return ffi.new("Color", c.r or c[1] or 0, c.g or c[2] or 0, c.b or c[3] or 0, c.a or c[4] or 255)
 end
 
@@ -664,7 +670,6 @@ local function rect_from_c(r)
     return { x = tonumber(r.x), y = tonumber(r.y), width = tonumber(r.width), height = tonumber(r.height) }
 end
 
--- --- 2. Complex Structures ---
 
 local function image_to_c(img)
     if ffi.istype("Image", img) then return img end
@@ -801,7 +806,7 @@ local function vr_device_info_to_c(d)
     c_d.eyeToScreenDistance = d.eyeToScreenDistance
     c_d.lensSeparationDistance = d.lensSeparationDistance
     c_d.interpupillaryDistance = d.interpupillaryDistance
-    -- Arrays need manual copy if passed as tables
+
     if d.lensDistortionValues then
         for i=0,3 do c_d.lensDistortionValues[i] = d.lensDistortionValues[i+1] or d.lensDistortionValues[i] or 0 end
     end
@@ -810,13 +815,6 @@ local function vr_device_info_to_c(d)
     end
     return c_d
 end
-
--- --- 3. Resources (Usually kept as cdata, but helpers for creation) ---
-
--- Texture, Shader, RenderTexture, Font, Mesh, Model, Sound, Music are typically 
--- managed by Raylib and returned as cdata. We usually don't convert them TO c from Lua tables
--- unless we are creating them manually (which is rare and complex).
--- However, for consistency, here is how you would access their fields if needed.
 
 local function texture_from_c(t)
     return {
@@ -831,7 +829,7 @@ end
 local function shader_from_c(s)
     return {
         id = tonumber(s.id),
-        locs = s.locs -- pointer to int array
+        locs = s.locs
     }
 end
 
@@ -1175,6 +1173,443 @@ end
 
 
 -- raymath
+EPSILON = 0.000001
+
+function binds.Clamp(value, min, max)
+    return math.max(min, math.min(value, max))
+end
+
+function binds.Lerp(start, end_, amount)
+    return start + amount * (end_ - start)
+end
+
+function binds.Normalize(value, start, end_)
+    return (value - start) / (end_ - start)
+end
+
+function binds.Remap(value, inputStart, inputEnd, outputStart, outputEnd)
+    return (value - inputStart) / (inputEnd - inputStart) * (outputEnd - outputStart) + outputStart
+end
+
+function binds.Wrap(value, min, max)
+    return value - (max - min) * math.floor((value - min) / (max - min))
+end
+
+function binds.FloatEquals(x, y)
+    return math.abs(x - y) <= (EPSILON * math.max(1.0, math.max(math.abs(x), math.abs(y))))
+end
+
+
+function binds.Vector2Zero()
+    return {x = 0.0, y = 0.0}
+end
+
+function binds.Vector2One()
+    return {x = 1.0, y = 1.0}
+end
+
+function binds.Vector2Add(v1, v2)
+    return {x = v1.x + v2.x, y = v1.y + v2.y}
+end
+
+function binds.Vector2AddValue(v, add)
+    return {x = v.x + add, y = v.y + add}
+end
+
+function binds.Vector2Subtract(v1, v2)
+    return {x = v1.x - v2.x, y = v1.y - v2.y}
+end
+
+function binds.Vector2SubtractValue(v, sub)
+    return {x = v.x - sub, y = v.y - sub}
+end
+
+function binds.Vector2Length(v)
+    return math.sqrt(v.x * v.x + v.y * v.y)
+end
+
+function binds.Vector2LengthSqr(v)
+    return v.x * v.x + v.y * v.y
+end
+
+function binds.Vector2DotProduct(v1, v2)
+    return v1.x * v2.x + v1.y * v2.y
+end
+
+function binds.Vector2CrossProduct(v1, v2)
+    return v1.x * v2.y - v1.y * v2.x
+end
+
+function binds.Vector2Distance(v1, v2)
+    local dx = v1.x - v2.x
+    local dy = v1.y - v2.y
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+function binds.Vector2DistanceSqr(v1, v2)
+    local dx = v1.x - v2.x
+    local dy = v1.y - v2.y
+    return dx * dx + dy * dy
+end
+
+function binds.Vector2Angle(v1, v2)
+    local dot = v1.x * v2.x + v1.y * v2.y
+    local det = v1.x * v2.y - v1.y * v2.x
+    
+    return math.atan2(det, dot)
+end
+
+function binds.Vector2LineAngle(start, end_)
+    return -math.atan2(end_.y - start.y, end_.x - start.x)
+end
+
+function binds.Vector2Scale(v, scale)
+    return { x = v.x * scale, y = v.y * scale }
+end
+
+function binds.Vector2Multiply(v1, v2)
+    return { x = v1.x * v2.x, y = v1.y * v2.y }
+end
+
+function binds.Vector2Negate(v)
+    return { x = -v.x, y = -v.y }
+end
+
+function binds.Vector2Divide(v1, v2)
+    return { x = v1.x / v2.x, y = v1.y / v2.y }
+end
+
+function binds.Vector2Normalize(v)
+    local length = math.sqrt(v.x * v.x + v.y * v.y)
+    
+    if length > 0 then
+        local ilength = 1.0 / length
+        return { x = v.x * ilength, y = v.y * ilength }
+    end
+    
+    return { x = 0, y = 0 }
+end
+
+function binds.Vector2Transform(v, mat)
+    local x = v.x
+    local y = v.y
+    
+    return {
+        x = mat.m0 * x + mat.m4 * y + mat.m12,
+        y = mat.m1 * x + mat.m5 * y + mat.m13
+    }
+end
+
+function binds.Vector2Lerp(v1, v2, amount)
+    return {
+        x = v1.x + amount * (v2.x - v1.x),
+        y = v1.y + amount * (v2.y - v1.y)
+    }
+end
+
+function binds.Vector2Reflect(v, normal)
+    local dotProduct = v.x * normal.x + v.y * normal.y
+    
+    return {
+        x = v.x - 2.0 * normal.x * dotProduct,
+        y = v.y - 2.0 * normal.y * dotProduct
+    }
+end
+
+function binds.Vector2Min(v1, v2)
+    return {
+        x = math.min(v1.x, v2.x),
+        y = math.min(v1.y, v2.y)
+    }
+end
+
+function binds.Vector2Max(v1, v2)
+    return {
+        x = math.max(v1.x, v2.x),
+        y = math.max(v1.y, v2.y)
+    }
+end
+
+function binds.Vector2Rotate(v, angle)
+    local cosres = math.cos(angle)
+    local sinres = math.sin(angle)
+    
+    return {
+        x = v.x * cosres - v.y * sinres,
+        y = v.x * sinres + v.y * cosres
+    }
+end
+
+function binds.Vector2MoveTowards(v, target, maxDistance)
+    local dx = target.x - v.x
+    local dy = target.y - v.y
+    local value = dx * dx + dy * dy
+    
+    if value == 0 or (maxDistance >= 0 and value <= maxDistance * maxDistance) then
+        return { x = target.x, y = target.y }
+    end
+    
+    local dist = math.sqrt(value)
+    
+    return {
+        x = v.x + dx / dist * maxDistance,
+        y = v.y + dy / dist * maxDistance
+    }
+end
+
+function binds.Vector2Invert(v)
+    return {
+        x = 1.0 / v.x,
+        y = 1.0 / v.y
+    }
+end
+
+function binds.Vector2Clamp(v, min, max)
+    return {
+        x = math.min(max.x, math.max(min.x, v.x)),
+        y = math.min(max.y, math.max(min.y, v.y))
+    }
+end
+
+function binds.Vector2ClampValue(v, min, max)
+    local lengthSqr = v.x * v.x + v.y * v.y
+    
+    if lengthSqr > 0 then
+        local length = math.sqrt(lengthSqr)
+        local scale = 1
+        
+        if length < min then
+            scale = min / length
+        elseif length > max then
+            scale = max / length
+        end
+        
+        return {
+            x = v.x * scale,
+            y = v.y * scale
+        }
+    end
+    
+    return { x = v.x, y = v.y }
+end
+
+function binds.Vector2Equals(p, q)
+    
+    local xEqual = math.abs(p.x - q.x) <= (EPSILON * math.max(1.0, math.max(math.abs(p.x), math.abs(q.x))))
+    local yEqual = math.abs(p.y - q.y) <= (EPSILON * math.max(1.0, math.max(math.abs(p.y), math.abs(q.y))))
+    
+    return xEqual and yEqual
+end
+
+function binds.Vector2Refract(v, n, r)
+    local dot = v.x * n.x + v.y * n.y
+    local d = 1.0 - r * r * (1.0 - dot * dot)
+    
+    if d >= 0 then
+        d = math.sqrt(d)
+        
+        return {
+            x = r * v.x - (r * dot + d) * n.x,
+            y = r * v.y - (r * dot + d) * n.y
+        }
+    end
+    
+    return { x = 0, y = 0 }
+end
+
+
+function binds.Vector3Zero()
+    return { x = 0.0, y = 0.0, z = 0.0 }
+end
+
+function binds.Vector3One()
+    return { x = 1.0, y = 1.0, z = 1.0 }
+end
+
+function binds.Vector3Add(v1, v2)
+    return { x = v1.x + v2.x, y = v1.y + v2.y, z = v1.z + v2.z }
+end
+
+function binds.Vector3AddValue(v, add)
+    return { x = v.x + add, y = v.y + add, z = v.z + add }
+end
+
+function binds.Vector3Subtract(v1, v2)
+    return { x = v1.x - v2.x, y = v1.y - v2.y, z = v1.z - v2.z }
+end
+
+function binds.Vector3SubtractValue(v, sub)
+    return { x = v.x - sub, y = v.y - sub, z = v.z - sub }
+end
+
+function binds.Vector3Scale(v, scalar)
+    return { x = v.x * scalar, y = v.y * scalar, z = v.z * scalar }
+end
+
+function binds.Vector3Multiply(v1, v2)
+    return { x = v1.x * v2.x, y = v1.y * v2.y, z = v1.z * v2.z }
+end
+
+function binds.Vector3CrossProduct(v1, v2)
+    return {
+        x = v1.y * v2.z - v1.z * v2.y,
+        y = v1.z * v2.x - v1.x * v2.z,
+        z = v1.x * v2.y - v1.y * v2.x
+    }
+end
+
+function binds.Vector3Perpendicular(v)
+    local min = math.abs(v.x)
+    local cardinalAxis = { x = 1.0, y = 0.0, z = 0.0 }
+
+    if math.abs(v.y) < min then
+        min = math.abs(v.y)
+        cardinalAxis = { x = 0.0, y = 1.0, z = 0.0 }
+    end
+
+    if math.abs(v.z) < min then
+        cardinalAxis = { x = 0.0, y = 0.0, z = 1.0 }
+    end
+
+    return {
+        x = v.y * cardinalAxis.z - v.z * cardinalAxis.y,
+        y = v.z * cardinalAxis.x - v.x * cardinalAxis.z,
+        z = v.x * cardinalAxis.y - v.y * cardinalAxis.x
+    }
+end
+
+function binds.Vector3Length(v)
+    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+end
+
+function binds.Vector3LengthSqr(v)
+    return v.x * v.x + v.y * v.y + v.z * v.z
+end
+
+function binds.Vector3DotProduct(v1, v2)
+    return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+end
+
+function binds.Vector3Distance(v1, v2)
+    local dx = v2.x - v1.x
+    local dy = v2.y - v1.y
+    local dz = v2.z - v1.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+function binds.Vector3DistanceSqr(v1, v2)
+    local dx = v2.x - v1.x
+    local dy = v2.y - v1.y
+    local dz = v2.z - v1.z
+    return dx * dx + dy * dy + dz * dz
+end
+
+function binds.Vector3Angle(v1, v2)
+    local cx = v1.y * v2.z - v1.z * v2.y
+    local cy = v1.z * v2.x - v1.x * v2.z
+    local cz = v1.x * v2.y - v1.y * v2.x
+    
+    local len = math.sqrt(cx * cx + cy * cy + cz * cz)
+    
+    local dot = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+    
+    return math.atan2(len, dot)
+end
+
+function binds.Vector3Negate(v)
+    return { x = -v.x, y = -v.y, z = -v.z }
+end
+
+function binds.Vector3Divide(v1, v2)
+    return { x = v1.x / v2.x, y = v1.y / v2.y, z = v1.z / v2.z }
+end
+
+function binds.Vector3Normalize(v)
+    local length = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    
+    if length ~= 0 then
+        local ilength = 1.0 / length
+        return {
+            x = v.x * ilength,
+            y = v.y * ilength,
+            z = v.z * ilength
+        }
+    end
+    
+    return { x = 0, y = 0, z = 0 }
+end
+
+function binds.Vector3Project(v1, v2)
+    local v1dv2 = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+    local v2dv2 = v2.x * v2.x + v2.y * v2.y + v2.z * v2.z
+    
+    local mag = v1dv2 / v2dv2
+    
+    return {
+        x = v2.x * mag,
+        y = v2.y * mag,
+        z = v2.z * mag
+    }
+end
+
+function binds.Vector3Reject(v1, v2)
+    local v1dv2 = v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+    local v2dv2 = v2.x * v2.x + v2.y * v2.y + v2.z * v2.z
+    
+    local mag = v1dv2 / v2dv2
+    
+    return {
+        x = v1.x - v2.x * mag,
+        y = v1.y - v2.y * mag,
+        z = v1.z - v2.z * mag
+    }
+end
+
+function binds.Vector3OrthoNormalize(v1, v2)
+    raymath.Vector3OrthoNormalize(v1, v2)
+end
+
+function binds.Vector3Transform(v, mat)
+    local x = v.x
+    local y = v.y
+    local z = v.z
+    
+    return {
+        x = mat.m0 * x + mat.m4 * y + mat.m8 * z + mat.m12,
+        y = mat.m1 * x + mat.m5 * y + mat.m9 * z + mat.m13,
+        z = mat.m2 * x + mat.m6 * y + mat.m10 * z + mat.m14
+    }
+end
+
+function binds.Vector3RotateByQuaternion(v, q)
+    local vx = v.x
+    local vy = v.y
+    local vz = v.z
+    
+    local qx = q.x
+    local qy = q.y
+    local qz = q.z
+    local qw = q.w
+    
+    local qx2 = qx * qx
+    local qy2 = qy * qy
+    local qz2 = qz * qz
+    local qw2 = qw * qw
+    
+    local qxqy = qx * qy
+    local qxqz = qx * qz
+    local qyqz = qy * qz
+    local qwqx = qw * qx
+    local qwqy = qw * qy
+    local qwqz = qw * qz
+    
+    return {
+        x = vx * (qx2 + qw2 - qy2 - qz2) + vy * (2 * qxqy - 2 * qwqz) + vz * (2 * qxqz + 2 * qwqy),
+        y = vx * (2 * qwqz + 2 * qxqy) + vy * (qw2 - qx2 + qy2 - qz2) + vz * (-2 * qwqx + 2 * qyqz),
+        z = vx * (-2 * qwqy + 2 * qxqz) + vy * (2 * qwqx + 2 * qyqz) + vz * (qw2 - qx2 - qy2 + qz2)
+    }
+end
+
 function binds.Vector3RotateByAxisAngle(v, axis, angle)
     local c_v = vec3_to_c(v)
     local c_axis = vec3_to_c(axis)
@@ -1183,63 +1618,197 @@ function binds.Vector3RotateByAxisAngle(v, axis, angle)
     return vec3_from_c(result)
 end
 
-function binds.Vector3Angle(v1, v2)
-    local c_v1 = vec3_to_c(v1)
-    local c_v2 = vec3_to_c(v2)
-
-    local angle = raylib.Vector3Angle(c_v1, c_v2)
-
-    return tonumber(angle)
-end
-
-function binds.Vector3CrossProduct(v1, v2)
-    local c_v1 = vec3_to_c(v1)
-    local c_v2 = vec3_to_c(v2)
+function binds.Vector3MoveTowards(v, target, maxDistance)
+    local dx = target.x - v.x
+    local dy = target.y - v.y
+    local dz = target.z - v.z
     
-    local result = raylib.Vector3CrossProduct(c_v1, c_v2)
-    return vec3_from_c(result)
-end
-
-function binds.Vector3Normalize(v)
-    local c_v = vec3_to_c(v)
-    local result = raylib.Vector3Normalize(c_v)
-    return vec3_from_c(result)
-end
-
-function binds.Vector3Scale(v, scalar)
-    local c_v = vec3_to_c(v)
-    local result = raylib.Vector3Scale(c_v, scalar)
-    return vec3_from_c(result)
-end
-
-function binds.Vector3Add(v1, v2)
+    local value = dx * dx + dy * dy + dz * dz
+    
+    if value == 0 or (maxDistance >= 0 and value <= maxDistance * maxDistance) then
+        return { x = target.x, y = target.y, z = target.z }
+    end
+    
+    local dist = math.sqrt(value)
+    
     return {
-        x = (v1.x or v1[1] or 0) + (v2.x or v2[1] or 0),
-        y = (v1.y or v1[2] or 0) + (v2.y or v2[2] or 0),
-        z = (v1.z or v1[3] or 0) + (v2.z or v2[3] or 0)
+        x = v.x + dx / dist * maxDistance,
+        y = v.y + dy / dist * maxDistance,
+        z = v.z + dz / dist * maxDistance
     }
 end
 
 function binds.Vector3Lerp(v1, v2, amount)
-    local x1 = v1.x or v1[1] or 0
-    local y1 = v1.y or v1[2] or 0
-    local z1 = v1.z or v1[3] or 0
-    
-    local x2 = v2.x or v2[1] or 0
-    local y2 = v2.y or v2[2] or 0
-    local z2 = v2.z or v2[3] or 0
-
     return {
-        x = x1 + amount * (x2 - x1),
-        y = y1 + amount * (y2 - y1),
-        z = z1 + amount * (z2 - z1)
+        x = v1.x + amount * (v2.x - v1.x),
+        y = v1.y + amount * (v2.y - v1.y),
+        z = v1.z + amount * (v2.z - v1.z)
     }
 end
 
-function binds.Lerp(start, end_val, amount)
-    return start + amount * (end_val - start)
+function binds.Vector3CubicHermite(v1, tangent1, v2, tangent2, amount)
+    local amountPow2 = amount * amount
+    local amountPow3 = amount * amount * amount
+    
+    local c1 = 2 * amountPow3 - 3 * amountPow2 + 1
+    local c2 = amountPow3 - 2 * amountPow2 + amount
+    local c3 = -2 * amountPow3 + 3 * amountPow2
+    local c4 = amountPow3 - amountPow2
+    
+    return {
+        x = c1 * v1.x + c2 * tangent1.x + c3 * v2.x + c4 * tangent2.x,
+        y = c1 * v1.y + c2 * tangent1.y + c3 * v2.y + c4 * tangent2.y,
+        z = c1 * v1.z + c2 * tangent1.z + c3 * v2.z + c4 * tangent2.z
+    }
 end
 
+function binds.Vector3Reflect(v, normal)
+    local dotProduct = v.x * normal.x + v.y * normal.y + v.z * normal.z
+    
+    return {
+        x = v.x - 2.0 * normal.x * dotProduct,
+        y = v.y - 2.0 * normal.y * dotProduct,
+        z = v.z - 2.0 * normal.z * dotProduct
+    }
+end
+
+function binds.Vector3Min(v1, v2)
+    return {
+        x = math.min(v1.x, v2.x),
+        y = math.min(v1.y, v2.y),
+        z = math.min(v1.z, v2.z)
+    }
+end
+
+function binds.Vector3Max(v1, v2)
+    return {
+        x = math.max(v1.x, v2.x),
+        y = math.max(v1.y, v2.y),
+        z = math.max(v1.z, v2.z)
+    }
+end
+
+function binds.Vector3Barycenter(p, a, b, c)
+    local v0x = b.x - a.x
+    local v0y = b.y - a.y
+    local v0z = b.z - a.z
+    
+    local v1x = c.x - a.x
+    local v1y = c.y - a.y
+    local v1z = c.z - a.z
+    
+    local v2x = p.x - a.x
+    local v2y = p.y - a.y
+    local v2z = p.z - a.z
+    
+    local d00 = v0x * v0x + v0y * v0y + v0z * v0z
+    local d01 = v0x * v1x + v0y * v1y + v0z * v1z
+    local d11 = v1x * v1x + v1y * v1y + v1z * v1z
+    local d20 = v2x * v0x + v2y * v0y + v2z * v0z
+    local d21 = v2x * v1x + v2y * v1y + v2z * v1z
+    
+    local denom = d00 * d11 - d01 * d01
+    
+    local result_y = (d11 * d20 - d01 * d21) / denom
+    local result_z = (d00 * d21 - d01 * d20) / denom
+    local result_x = 1.0 - (result_z + result_y)
+    
+    return {
+        x = result_x,
+        y = result_y,
+        z = result_z
+    }
+end
+
+function binds.Vector3Unproject(source, projection, view)
+    local result = raymath.Vector3Unproject(source, projection, view)
+    return {
+        x = result[0],
+        y = result[1],
+        z = result[2]
+    }
+end
+
+function binds.Vector3ToFloatV(v)
+    return { v.x, v.y, v.z }
+end
+
+function binds.Vector3Invert(v)
+    return {
+        x = 1.0 / v.x,
+        y = 1.0 / v.y,
+        z = 1.0 / v.z
+    }
+end
+
+function Vector3Clamp(v, min, max)
+    return {
+        x = math.min(max.x, math.max(min.x, v.x)),
+        y = math.min(max.y, math.max(min.y, v.y)),
+        z = math.min(max.z, math.max(min.z, v.z))
+    }
+end
+
+function Vector3ClampValue(v, min, max)
+    local lengthSq = v.x * v.x + v.y * v.y + v.z * v.z
+    
+    if lengthSq > 0.0 then
+        local length = math.sqrt(lengthSq)
+        local scale = 1.0
+        
+        if length < min then
+            scale = min / length
+        elseif length > max then
+            scale = max / length
+        end
+        
+        return {
+            x = v.x * scale,
+            y = v.y * scale,
+            z = v.z * scale
+        }
+    end
+    
+    return { x = v.x, y = v.y, z = v.z }
+end
+
+function Vector3Equals(p, q)    
+    local checkComponent = function(a, b)
+        local diff = math.abs(a - b)
+        local maxVal = math.max(1.0, math.max(math.abs(a), math.abs(b)))
+        return diff <= (EPSILON * maxVal)
+    end
+    
+    return checkComponent(p.x, q.x) and
+           checkComponent(p.y, q.y) and
+           checkComponent(p.z, q.z)
+end
+
+function Vector3Refract(v, n, r)
+    local dot = v.x * n.x + v.y * n.y + v.z * n.z
+    local d = 1.0 - r * r * (1.0 - dot * dot)
+    
+    if d >= 0.0 then
+        d = math.sqrt(d)
+        local factor = r * dot + d
+        
+        return {
+            x = r * v.x - factor * n.x,
+            y = r * v.y - factor * n.y,
+            z = r * v.z - factor * n.z
+        }
+    end
+    
+    return { x = 0, y = 0, z = 0 }
+end
+
+
+
+
+
+
+
+-- another binds
 function binds.DrawPlane(centerPos, size, color)
     raylib.DrawPlane(vec3_to_c(centerPos), vec2_to_c(size), color_to_c(color))
 end
@@ -1479,6 +2048,185 @@ binds.GamepadAxis = {
     GAMEPAD_AXIS_RIGHT_TRIGGER = 5
 }
 
+binds.MaterialMapIndex =  {
+    MATERIAL_MAP_ALBEDO = 0,
+    MATERIAL_MAP_METALNESS = 1,
+    MATERIAL_MAP_NORMAL = 2,
+    MATERIAL_MAP_ROUGHNESS = 3,
+    MATERIAL_MAP_OCCLUSION = 4,
+    MATERIAL_MAP_EMISSION = 5,
+    MATERIAL_MAP_HEIGHT = 6,
+    MATERIAL_MAP_CUBEMAP = 7,
+    MATERIAL_MAP_IRRADIANCE = 8,
+    MATERIAL_MAP_PREFILTER = 9,
+    MATERIAL_MAP_BRDF = 10,
+    MATERIAL_MAP_DIFFUSE = 0,
+    MATERIAL_MAP_SPECULAR = 1
+}
+
+binds.ShaderLocationIndex = {
+    SHADER_LOC_VERTEX_POSITION = 0,
+    SHADER_LOC_VERTEX_TEXCOORD01 = 1,
+    SHADER_LOC_VERTEX_TEXCOORD02 = 2,
+    SHADER_LOC_VERTEX_NORMAL = 3,
+    SHADER_LOC_VERTEX_TANGENT = 4,
+    SHADER_LOC_VERTEX_COLOR = 5,
+    SHADER_LOC_MATRIX_MVP = 6,
+    SHADER_LOC_MATRIX_VIEW = 7,
+    SHADER_LOC_MATRIX_PROJECTION = 8,
+    SHADER_LOC_MATRIX_MODEL = 9,
+    SHADER_LOC_MATRIX_NORMAL = 10,
+    SHADER_LOC_VECTOR_VIEW = 11,
+    SHADER_LOC_COLOR_DIFFUSE = 12,
+    SHADER_LOC_COLOR_SPECULAR = 13,
+    SHADER_LOC_COLOR_AMBIENT = 14,
+    SHADER_LOC_MAP_ALBEDO = 15,
+    SHADER_LOC_MAP_METALNESS = 16,
+    SHADER_LOC_MAP_NORMAL = 17,
+    SHADER_LOC_MAP_ROUGHNESS = 18,
+    SHADER_LOC_MAP_OCCLUSION = 19,
+    SHADER_LOC_MAP_EMISSION = 20,
+    SHADER_LOC_MAP_HEIGHT = 21,
+    SHADER_LOC_MAP_CUBEMAP = 22,
+    SHADER_LOC_MAP_IRRADIANCE = 23,
+    SHADER_LOC_MAP_PREFILTER = 24,
+    SHADER_LOC_MAP_BRDF = 25,
+    SHADER_LOC_VERTEX_BONEIDS = 26,
+    SHADER_LOC_VERTEX_BONEWEIGHTS = 27,
+    SHADER_LOC_MATRIX_BONETRANSFORMS = 28,
+    SHADER_LOC_VERTEX_INSTANCETRANSFORM = 29,
+    SHADER_LOC_MAP_DIFFUSE = 15,
+    SHADER_LOC_MAP_SPECULAR = 16
+}
+
+binds.ShaderUniformDataType = {
+    SHADER_UNIFORM_FLOAT = 0,
+    SHADER_UNIFORM_VEC2 = 1,
+    SHADER_UNIFORM_VEC3 = 2,
+    SHADER_UNIFORM_VEC4 = 3,
+    SHADER_UNIFORM_INT = 4,
+    SHADER_UNIFORM_IVEC2 = 5,
+    SHADER_UNIFORM_IVEC3 = 6,
+    SHADER_UNIFORM_IVEC4 = 7,
+    SHADER_UNIFORM_UINT = 8,
+    SHADER_UNIFORM_UIVEC2 = 9,
+    SHADER_UNIFORM_UIVEC3 = 10,
+    SHADER_UNIFORM_UIVEC4 = 11,
+    SHADER_UNIFORM_SAMPLER2D = 12
+}
+
+binds.ShaderAttributeDataType = {
+    SHADER_ATTRIB_FLOAT = 0,
+    SHADER_ATTRIB_VEC2 = 1,
+    SHADER_ATTRIB_VEC3 = 2,
+    SHADER_ATTRIB_VEC4 = 3
+}
+
+binds.PixelFormat = {
+    PIXELFORMAT_UNCOMPRESSED_GRAYSCALE = 1,
+    PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA = 2,
+    PIXELFORMAT_UNCOMPRESSED_R5G6B5 = 3,
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8 = 4,
+    PIXELFORMAT_UNCOMPRESSED_R5G5B5A1 = 5,
+    PIXELFORMAT_UNCOMPRESSED_R4G4B4A4 = 6,
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 = 7,
+    PIXELFORMAT_UNCOMPRESSED_R32 = 8,
+    PIXELFORMAT_UNCOMPRESSED_R32G32B32 = 9,
+    PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 = 10,
+    PIXELFORMAT_UNCOMPRESSED_R16 = 11,
+    PIXELFORMAT_UNCOMPRESSED_R16G16B16 = 12,
+    PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 = 13,
+    PIXELFORMAT_COMPRESSED_DXT1_RGB = 14,
+    PIXELFORMAT_COMPRESSED_DXT1_RGBA = 15,
+    PIXELFORMAT_COMPRESSED_DXT3_RGBA = 16,
+    PIXELFORMAT_COMPRESSED_DXT5_RGBA = 17,
+    PIXELFORMAT_COMPRESSED_ETC1_RGB = 18,
+    PIXELFORMAT_COMPRESSED_ETC2_RGB = 19,
+    PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA = 20,
+    PIXELFORMAT_COMPRESSED_PVRT_RGB = 21,
+    PIXELFORMAT_COMPRESSED_PVRT_RGBA = 22,
+    PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA = 23,
+    PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA = 24
+}
+
+binds.TextureFilter = {
+    TEXTURE_FILTER_POINT = 0,
+    TEXTURE_FILTER_BILINEAR = 1,
+    TEXTURE_FILTER_TRILINEAR = 2,
+    TEXTURE_FILTER_ANISOTROPIC_4X = 3,
+    TEXTURE_FILTER_ANISOTROPIC_8X = 4,
+    TEXTURE_FILTER_ANISOTROPIC_16X = 5,
+}
+
+
+binds.TextureWrap = {
+    TEXTURE_WRAP_REPEAT = 0,
+    TEXTURE_WRAP_CLAMP = 1,
+    TEXTURE_WRAP_MIRROR_REPEAT = 2,
+    TEXTURE_WRAP_MIRROR_CLAMP = 3
+}
+
+
+binds.CubemapLayout = {
+    CUBEMAP_LAYOUT_AUTO_DETECT = 0,
+    CUBEMAP_LAYOUT_LINE_VERTICAL = 1,
+    CUBEMAP_LAYOUT_LINE_HORIZONTAL = 2,
+    CUBEMAP_LAYOUT_CROSS_THREE_BY_FOUR = 3,
+    CUBEMAP_LAYOUT_CROSS_FOUR_BY_THREE = 4
+}
+
+
+binds.FontType = {
+    FONT_DEFAULT = 0,
+    FONT_BITMAP = 1,
+    FONT_SDF = 2
+}
+
+
+binds.BlendMode = {
+    BLEND_ALPHA = 0,
+    BLEND_ADDITIVE = 1,
+    BLEND_MULTIPLIED = 2,
+    BLEND_ADD_COLORS = 3,
+    BLEND_SUBTRACT_COLORS = 4,
+    BLEND_ALPHA_PREMULTIPLY = 5,
+    BLEND_CUSTOM = 6,
+    BLEND_CUSTOM_SEPARATE = 7
+}
+
+binds.Gesture = {
+    GESTURE_NONE        = 0,
+    GESTURE_TAP         = 1,
+    GESTURE_DOUBLETAP   = 2,
+    GESTURE_HOLD        = 4,
+    GESTURE_DRAG        = 8,
+    GESTURE_SWIPE_RIGHT = 16,
+    GESTURE_SWIPE_LEFT  = 32,
+    GESTURE_SWIPE_UP    = 64,
+    GESTURE_SWIPE_DOWN  = 128,
+    GESTURE_PINCH_IN    = 256,
+    GESTURE_PINCH_OUT   = 512
+}
+
+binds.CameraMode = {
+    CAMERA_CUSTOM = 0,
+    CAMERA_FREE = 1,
+    CAMERA_ORBITAL = 2,
+    CAMERA_FIRST_PERSON = 3,
+    CAMERA_THIRD_PERSON = 4
+}
+
+binds.CameraProjection = {
+    CAMERA_PERSPECTIVE = 0,
+    CAMERA_ORTHOGRAPHIC = 1
+}
+
+binds.NPatchLayout = {
+    NPATCH_NINE_PATCH = 0,
+    NPATCH_THREE_PATCH_VERTICAL = 1,
+    NPATCH_THREE_PATCH_HORIZONTAL = 2
+}
+
 binds.Color = {
     LIGHTGRAY = { 200, 200, 200, 255 } ,
     GRAY      = { 130, 130, 130, 255 } ,
@@ -1509,20 +2257,6 @@ binds.Color = {
     RAYWHITE  = { 245, 245, 245, 255 }
 }
 
-
-binds.TextureFilter = {
-    TEXTURE_FILTER_POINT           = 0,
-    TEXTURE_FILTER_BILINEAR        = 1,
-    TEXTURE_FILTER_TRILINEAR       = 2,
-    TEXTURE_FILTER_ANISOTROPIC_4X  = 3,
-    TEXTURE_FILTER_ANISOTROPIC_8X  = 4,
-    TEXTURE_FILTER_ANISOTROPIC_16X = 5
-}
-
-binds.CameraProjection = {
-    CAMERA_PERSPECTIVE = 0,
-    CAMERA_ORTHOGRAPHIC = 1
-}
 
 -- no Lua wrappers
 local function append(dst, src)

@@ -1,7 +1,7 @@
 local rl = require("ffibindings")
 
 -- Defines and Macros
-local GRAVITY         = 32.0
+local GRAVITY         = 0.0
 local MAX_SPEED       = 20.0
 local CROUCH_SPEED     = 5.0
 local JUMP_FORCE      = 12.0
