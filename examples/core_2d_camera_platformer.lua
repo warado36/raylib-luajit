@@ -6,7 +6,7 @@
 -- BSD-like license that allows static linking with closed source software
 -- Copyright (c) 2019-2025 arvyy (@arvyy)
 
-local rl = require("ffibindings")
+local rl = require("raylib_luajit")
 
 local G = 400
 local PLAYER_JUMP_SPD = 350.0

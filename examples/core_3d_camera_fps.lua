@@ -1,14 +1,14 @@
-local rl = require("ffibindings")
+local rl = require("raylib_luajit")
 
 -- Defines and Macros
-local GRAVITY         = 0.0
-local MAX_SPEED       = 20.0
+local GRAVITY          = 32.0
+local MAX_SPEED        = 20.0
 local CROUCH_SPEED     = 5.0
-local JUMP_FORCE      = 12.0
-local MAX_ACCEL      = 150.0
+local JUMP_FORCE       = 12.0
+local MAX_ACCEL        = 150.0
 local FRICTION         = 0.86
 local AIR_DRAG         = 0.98
-local CONTROL         = 15.0
+local CONTROL          = 15.0
 local CROUCH_HEIGHT    = 0.0
 local STAND_HEIGHT     = 1.0
 local BOTTOM_HEIGHT    = 0.5
@@ -97,10 +97,9 @@ function UpdateBody(body, rot, side, forward, jumpPressed, crouchHold)
     end
 end
 
-function UpdateCameraFPS(camera)
-    local up = { x = 0.0, y = 1.0, z = 0.0 }
-    local targetOffset = { x = 0.0, y = 0.0, z = -1.0 }
-    
+local up = rl.Vector3.UnitY
+local targetOffset = rl.Vector3Negate(rl.Vector3.UnitZ)
+function UpdateCameraFPS(camera) 
     local yaw = rl.Vector3RotateByAxisAngle(targetOffset, up, lookRotation[1])
     
     local maxAngleUp = rl.Vector3Angle(up, yaw)
@@ -109,7 +108,7 @@ function UpdateCameraFPS(camera)
         lookRotation[2] = -maxAngleUp
     end
     
-    local maxAngleDown = rl.Vector3Angle({ x = -up.x, y = -up.y, z = -up.z }, yaw)
+    local maxAngleDown = rl.Vector3Angle(rl.Vector3Negate(up), yaw)
     maxAngleDown = maxAngleDown * -1.0
     maxAngleDown = maxAngleDown + 0.001
     if -(lookRotation[2]) < maxAngleDown then

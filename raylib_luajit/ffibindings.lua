@@ -1,6 +1,7 @@
 -- NOTE: imports
 local ffi = require("ffi")
 local mathffi = require("ffi")
+local structs = require("structs")
 
 ffi.cdef[[
     typedef void (*TraceLogCallback)(int logLevel, const char *text, va_list args);
@@ -570,7 +571,6 @@ ffi.cdef[[
 
 
     // raymath
-    Vector3 Vector3RotateByAxisAngle(Vector3 v, Vector3 axis, float angle);
     float Vector3Angle(Vector3 v1, Vector3 v2);
     Vector3 Vector3CrossProduct(Vector3 v1, Vector3 v2);
     Vector3 Vector3Normalize(Vector3 v);
@@ -590,9 +590,9 @@ local raylib = ffi.load("./lib/libraylib.so")
 --
 
 mathffi.cdef[[
-    typedef float Vector3[3];
-    typedef float Matrix[16];
     void Vector3OrthoNormalize(Vector3 *v1, Vector3 *v2);
+    Vector3 Vector3RotateByQuaternion(Vector3 v, Quaternion q);
+    Vector3 Vector3RotateByAxisAngle(Vector3 v, Vector3 axis, float angle);
     Vector3 Vector3Unproject(Vector3 source, Matrix projection, Matrix view);
 ]]
 local raymath = mathffi.load("./raymath_rs/target/release/libraymath_rs.so")
@@ -606,7 +606,7 @@ local function vec2_to_c(v)
 end
 
 local function vec2_from_c(v)
-    return { x = tonumber(v.x), y = tonumber(v.y) }
+    return structs.Vector2:new(v.x, v.y)
 end
 
 local function vec3_to_c(v)
@@ -674,7 +674,7 @@ end
 local function image_to_c(img)
     if ffi.istype("Image", img) then return img end
     local c_img = ffi.new("Image")
-    c_img.data = img.data -- Ожидается cdata указатель
+    c_img.data = img.data
     c_img.width = img.width
     c_img.height = img.height
     c_img.mipmaps = img.mipmaps or 1
@@ -1005,12 +1005,12 @@ end
 
 function binds.GetMonitorPosition(monitor)
     local v = raylib.GetMonitorPosition(monitor)
-    return vec2_from_c(v)
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetTouchPosition(index)
     local v = raylib.GetTouchPosition(index)
-    return vec2_from_c(v)
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.LoadDirectoryFiles(dirPath)
@@ -1064,31 +1064,38 @@ function binds.LoadShaderFromMemory(vsCode, fsCode)
 end
 
 function binds.GetGestureDragVector()
-    return vec2_from_c(raylib.GetGestureDragVector())
+    local v = raylib.GetGestureDragVector()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetGesturePinchVector()
-    return vec2_from_c(raylib.GetGesturePinchVector())
+    local v = raylib.GetGesturePinchVector()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetMouseWheelMoveV()
-    return vec2_from_c(raylib.GetMouseWheelMoveV())
+    local v = raylib.GetMouseWheelMoveV()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetMousePosition()
-    return vec2_from_c(raylib.GetMousePosition())
+    local v = raylib.GetMousePosition()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetMouseDelta()
-    return vec2_from_c(raylib.GetMouseDelta())
+    local v = raylib.GetMouseDelta()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetWindowPosition()
-    return vec2_from_c(raylib.GetWindowPosition())
+    local v = raylib.GetWindowPosition()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.GetWindowScaleDPI()
-    return vec2_from_c(raylib.GetWindowScaleDPI())
+    local v = raylib.GetWindowScaleDPI()
+    return structs.Vector2:new(v.x, v.y)
 end
 
 function binds.LoadDroppedFiles()
@@ -1517,11 +1524,11 @@ function binds.Vector3Angle(v1, v2)
 end
 
 function binds.Vector3Negate(v)
-    return { x = -v.x, y = -v.y, z = -v.z }
+    return structs.Vector3:new(-v.x, -v.y, -v.z)
 end
 
 function binds.Vector3Divide(v1, v2)
-    return { x = v1.x / v2.x, y = v1.y / v2.y, z = v1.z / v2.z }
+    return structs.Vector3:new(v1.x / v2.x, v1.y / v2.y, v1.z / v2.z)
 end
 
 function binds.Vector3Normalize(v)
@@ -1566,8 +1573,17 @@ function binds.Vector3Reject(v1, v2)
 end
 
 function binds.Vector3OrthoNormalize(v1, v2)
-    raymath.Vector3OrthoNormalize(v1, v2)
+
+    local v1_c = mathffi.new("Vector3", v1.x, v1.y, v1.z)
+    local v2_c = mathffi.new("Vector3", v2.x, v2.y, v2.z)
+
+    raymath.Vector3OrthoNormalize(v1_c, v2_c)
+
+    v1.x, v1.y, v1.z = v1_c.x, v1_c.y, v1_c.z
+    v2.x, v2.y, v2.z = v2_c.x, v2_c.y, v2_c.z
 end
+
+
 
 function binds.Vector3Transform(v, mat)
     local x = v.x
@@ -1611,12 +1627,10 @@ function binds.Vector3RotateByQuaternion(v, q)
 end
 
 function binds.Vector3RotateByAxisAngle(v, axis, angle)
-    local c_v = vec3_to_c(v)
-    local c_axis = vec3_to_c(axis)
-    
-    local result = raylib.Vector3RotateByAxisAngle(c_v, c_axis, angle)
-    return vec3_from_c(result)
+    local result = raymath.Vector3RotateByAxisAngle(v, axis, angle)
+    return structs.Vector3:new(result.x, result.y, result.z)
 end
+
 
 function binds.Vector3MoveTowards(v, target, maxDistance)
     local dx = target.x - v.x
@@ -1808,6 +1822,13 @@ end
 
 
 
+
+
+
+
+
+
+
 -- another binds
 function binds.DrawPlane(centerPos, size, color)
     raylib.DrawPlane(vec3_to_c(centerPos), vec2_to_c(size), color_to_c(color))
@@ -1834,6 +1855,7 @@ end
 function binds.DrawRectangle(posX, posY, width, height, color)
     raylib.DrawRectangle(posX, posY, width, height, color_to_c(color))
 end
+
 
 function binds.DrawRectangleLines(posX, posY, width, height, color)
     raylib.DrawRectangleLines(posX, posY, width, height, color_to_c(color))
@@ -2406,6 +2428,15 @@ append(binds, {
     SetGesturesEnabled = raylib.SetGesturesEnabled,
     IsGestureDetected = raylib.IsGestureDetected,
 })
+
+
+append(binds, {
+    Vector2 = structs.Vector2,
+    Vector3 = structs.Vector3,
+    Vector4 = structs.Vector4,
+    Quaternion = structs.Quaternion
+})
+
 
 -- return the table
 return binds
